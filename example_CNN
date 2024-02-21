@@ -1,3 +1,384 @@
 #!/usr/bin/env python3
 
 # this is the CNN code that was run at all 285 grid cells
+
+import os
+os.environ['PYTHONHASHSEED']=str(0)
+import random
+random.seed(450)
+import numpy as np # re-import for random seed just in case
+np.random.seed(550)
+import tensorflow as tf
+tf.keras.utils.set_random_seed(650)
+
+session_conf = tf.compat.v1.ConfigProto(device_count={'CPU': 1})
+sess = tf.compat.v1.Session(config=session_conf)
+
+tf.compat.v1.disable_eager_execution()
+
+# This code was run 285 times in parallel using a job array, one for each CNN and indexed from 0 to 284
+import sys
+cellnum = int(sys.argv[2]) # this line is passes an incremented integer (0 to 284) from the bash script executing the job array
+
+import numpy as np
+import tensorflow as tf
+import pandas as pd
+import pickle
+import geopy
+import geopy.distance as gd
+from geopy.distance import geodesic as GD
+import innvestigate
+import shap
+import shap # for some reason, shap needs to be imported a 2nd time on Kamiak in order to actually import
+from scipy.ndimage import gaussian_filter
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import auc, precision_recall_curve
+
+from tensorflow.keras import models, layers
+from tensorflow.keras import metrics
+from tensorflow.keras import optimizers
+from tensorflow.keras import losses
+from tensorflow.keras import regularizers
+from tensorflow.keras import initializers
+from tensorflow.keras import callbacks
+
+import warnings
+warnings.filterwarnings('ignore') # suppresses runtime warnings in output
+
+infile = open("land_cells.pkl",'rb') # formerly df1
+land_cells = pickle.load(infile)
+infile.close()
+
+nldn_bool = np.load('nldn_bool2.npy') # need this for "cg_days"
+nldn_vec = np.reshape(nldn_bool,(3416,396))
+
+num_channels = 7 # change this to reflect number of predictor variables
+
+# spots are val_recalls,val_precisions,test_recalls,test_precisions,epochs,total number of predicted CG days,
+# val_AUC,pred_AUC,class_weights0,class_weights1
+cnn_metrics = np.empty(10)
+lrp_maxes_z = np.empty(num_channels)
+lrp_dists_z = np.empty(num_channels)
+relevances_z = np.empty([20,20,num_channels])
+lrp_maxes_c = np.empty(num_channels)
+lrp_dists_c = np.empty(num_channels)
+relevances_c = np.empty([20,20,num_channels])
+lrp_maxes_e = np.empty(num_channels)
+lrp_dists_e = np.empty(num_channels)
+relevances_e = np.empty([20,20,num_channels])
+
+cell = np.load('cell{}.npy'.format(cellnum))
+
+cell_loc = land_cells[land_cells.cell_number == cellnum].location.values[0]
+center_lat = land_cells[land_cells.cell_number == cellnum].lat.values[0]
+center_lon = land_cells[land_cells.cell_number == cellnum].lon.values[0]
+cg_days = nldn_vec[:,cell_loc]
+
+learning_rate = np.load('learning_rates.npy')[cellnum-1]
+batch_size = int(np.load('batch_sizes.npy')[cellnum-1])
+conv_filters = int(np.load('conv_filters.npy')[cellnum-1])
+dense_layers = int(np.load('dense_layers.npy')[cellnum-1])
+dense_neurons = 16
+activity_reg = np.load('activity_regs.npy')[cellnum-1]
+dropout_rate = np.load('dropout_rates.npy')[cellnum-1]
+split_seed = int(np.load('random_seeds.npy')[cellnum-1])
+class_wgt_position = int(np.load('class_weight_positions.npy')[cellnum-1])
+
+encoder = OneHotEncoder(sparse=False)
+y_data = np.asarray([cg_days]).T # giving it an extra column dimension (needs to be 2D)
+# transform data
+onehot = encoder.fit_transform(y_data)
+
+X = cell
+y = onehot
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=split_seed,
+                                                    shuffle = True, stratify = onehot)
+
+X_val, X_test, y_val, y_test = train_test_split(X_test, y_test, test_size=0.5, random_state=split_seed,
+                                                    shuffle = True, stratify = y_test)
+
+# class weights
+neg, pos = np.bincount(y_train[:,1].astype('int32'))
+if neg > pos:
+    weight_for_0 = 1
+    weight_for_1 = neg/pos
+    class_weights = {0: weight_for_0, 1: weight_for_1}
+    weights_list = np.linspace(1,weight_for_1,10)
+    class_wgts = [{0:1,1:weights_list[m]} for m in range(10)]
+else:
+    weight_for_0 = pos/neg
+    weight_for_1 = 1
+    class_weights = {0: weight_for_0, 1: weight_for_1}
+    weights_list = np.linspace(1,weight_for_0,10)
+    class_wgts = [{0:weights_list[m],1:1} for m in range(10)]
+
+wgt = class_wgts[class_wgt_position]
+cnn_metrics[8] = wgt[0]
+cnn_metrics[9] = wgt[1]
+
+METRICS = [
+    metrics.CategoricalAccuracy(name='accuracy'),
+    metrics.AUC(name='AUC'),
+    metrics.Precision(class_id = 1, name='precision'),
+    metrics.Recall(class_id = 1, name='recall')
+]
+
+def build_model(lr = learning_rate, conv_filters = conv_filters, dense_neurons = dense_neurons,
+                             dense_layers = 1,
+                activity_reg = activity_reg, dropout_rate = dropout_rate, input_channels = num_channels):
+
+    model = models.Sequential()
+    initializer = initializers.HeUniform(seed=750)
+    model.add(layers.InputLayer(input_shape=(20, 20, input_channels))) ## define input shape
+
+    model.add(layers.Conv2D(conv_filters, (3,3),
+                                  kernel_initializer=initializer,
+                                  activity_regularizer=regularizers.l2(activity_reg)))
+    model.add(layers.Activation('relu'))
+    model.add(layers.MaxPooling2D((2,2)))
+    #model.add(layers.Dropout(dropout_rate))
+
+    model.add(layers.Conv2D(conv_filters, (3,3),
+                                  kernel_initializer=initializer,
+                                  activity_regularizer=regularizers.l2(activity_reg)))
+    model.add(layers.Activation('relu'))
+    model.add(layers.MaxPooling2D((2,2)))
+    #model.add(layers.Dropout(dropout_rate))
+
+    model.add(layers.Flatten())
+    for i in range(dense_layers):
+        model.add(layers.Dense(dense_neurons,
+                                     kernel_initializer=initializer,
+                                     activity_regularizer=regularizers.l2(activity_reg)))
+        model.add(layers.Activation('relu'))
+        model.add(layers.Dropout(dropout_rate))
+
+    model.add(layers.Dense(2, activation='softmax'))
+
+    model.compile(loss=losses.categorical_crossentropy,
+                  optimizer=optimizers.legacy.RMSprop(learning_rate = lr),
+                  metrics=METRICS)
+    return(model)
+
+model = build_model()
+
+callback = callbacks.EarlyStopping(monitor='val_loss', patience=10,
+                                           restore_best_weights = True)
+
+history = model.fit(X_train, y_train,
+          batch_size = batch_size,
+          epochs = 1000,
+          class_weight = class_wgts[class_wgt_position],
+          validation_data = (X_val, y_val),
+          callbacks = [callback],
+          verbose=0)
+
+# save model weights
+model.save_weights(f'trained_weights{cellnum}.h5')
+
+# save full model
+model.save(f'model{cellnum}.keras')
+
+# save history
+hist_df = pd.DataFrame(history.history)
+
+f = open(f'hist_df{cellnum}.pkl','wb')
+pickle.dump(hist_df,f)
+f.close()
+
+cnn_metrics[4] = hist_df.shape[0]
+
+cnn_metrics[0] = hist_df.iloc[-1,-1] # final val recall is last row and last column
+cnn_metrics[1] = hist_df.iloc[-1,-2]
+cnn_metrics[6] = hist_df.iloc[-1,-3] # val_AUC (3rd to last)
+
+pred = model.predict(X_test)
+pred = pd.DataFrame(pred)
+pred['pred'] = pred.idxmax(axis=1)
+test = pd.DataFrame(y_test)
+test['class'] = test.idxmax(axis=1)
+pred['actual'] = test['class']
+cg = pred[pred.actual == 1]
+cg1 = cg[cg.pred == 1]
+recall = cg1.shape[0]/cg.shape[0]
+cg2 = pred[pred.pred == 1]
+cg3 = cg2[cg2.actual == 1]
+if cg2.shape[0] > 0:
+    precision = cg3.shape[0]/cg2.shape[0]
+else:
+    precision = 0
+
+cnn_metrics[2] = recall
+cnn_metrics[3] = precision
+
+pred2 = model.predict(X)
+pred2 = pd.DataFrame(pred2)
+pred2['pred'] = pred2.idxmax(axis=1)
+cnn_metrics[5] = pred2.pred.sum()
+pred_cg = np.array(pred2.pred)
+
+# pred.actual is y_test
+# pred.pred is y_score
+precision, recall, thresholds = precision_recall_curve(pred.actual, pred.pred)
+cnn_metrics[7] = auc(recall, precision) # pred_AUC --> caution, this is precision-recall AUC (not ROC AUC)
+
+radius_steps1 = [950,850,750,650,550,450,350,250,150,50,
+                50,150,250,350,450,550,650,750,850,950]
+bearings1 = [0,0,0,0,0,0,0,0,0,0,180,180,180,180,180,180,180,180,180,180]
+radius_steps2 = [950,850,750,650,550,450,350,250,150,50,
+                50,150,250,350,450,550,650,750,850,950]
+bearings2 = [270,270,270,270,270,270,270,270,270,270,
+            90,90,90,90,90,90,90,90,90,90]
+
+interp_lats = []
+interp_lons = []
+for k in range(20):
+    start = geopy.Point(center_lat,center_lon)
+    transect = gd.distance(kilometers = radius_steps1[k])
+    dest = transect.destination(point = start, bearing = bearings1[k])
+    interp_lats.append(dest[0])
+    interp_lons.append(dest[1])
+interp_lats2 = []
+interp_lons2 = []
+for m in range(20):
+    start = geopy.Point(interp_lats[m],interp_lons[m])
+    for x in range(20):
+        transect = gd.distance(kilometers = radius_steps2[x])
+        dest = transect.destination(point = start, bearing = bearings2[x])
+        interp_lats2.append(dest[0])
+        interp_lons2.append(dest[1])
+
+# LRP-Z with gaussian filter
+model_strip = innvestigate.model_wo_softmax(model)
+lrp_analyzer = innvestigate.analyzer.relevance_based.relevance_analyzer.LRPZ(model_strip)
+rel_all = lrp_analyzer.analyze(X)
+
+idx1 = np.where(y_data==1)[0]
+rel1 = rel_all[idx1,:]
+rel_sums = np.sum(rel1,axis=0) # could use mean, but using sums to more easily interpret range
+
+# normalize 
+relevance = rel_sums/np.max(rel_sums)
+relevances_z = relevance
+
+lrp_max = np.empty(num_channels)
+lrp_argmax = np.empty(num_channels)
+for x in range(num_channels):
+    var = relevance[:,:,x]
+    var2 = gaussian_filter(var, sigma=0.8)
+    var2[:2,:] = 0
+    var2[:,:2] = 0
+    lrp_max[x] = np.max(var2)
+    lrp_argmax[x] = np.argmax(var2)
+lrp_maxes_z = lrp_max
+
+dists = np.empty(num_channels)
+for ii in range(num_channels):
+    idx_max = int(lrp_argmax[ii])
+    max_lat = interp_lats2[idx_max]
+    max_lon = interp_lons2[idx_max]
+    center = (center_lat,center_lon)
+    max_loc = (max_lat,max_lon)
+    dists[ii] = GD(center,max_loc).km
+lrp_dists_z = dists
+
+# LRP-comp 
+model_strip = innvestigate.model_wo_softmax(model)
+lrp_analyzer = innvestigate.analyzer.relevance_based.relevance_analyzer.LRPSequentialPresetA(model_strip)
+rel_all = lrp_analyzer.analyze(X)
+
+idx1 = np.where(y_data==1)[0]
+rel1 = rel_all[idx1,:]
+rel_sums = np.sum(rel1,axis=0) # could use mean, but using sums to more easily interpret range
+
+# normalize
+relevance = rel_sums/np.max(rel_sums)
+relevances_c = relevance
+
+lrp_max = np.empty(num_channels)
+lrp_argmax = np.empty(num_channels)
+for x in range(num_channels):
+    var = relevance[:,:,x]
+    var2 = var # removed gaussian filter step here
+    var2[:2,:] = 0
+    var2[:,:2] = 0
+    lrp_max[x] = np.max(var2)
+    lrp_argmax[x] = np.argmax(var2)
+lrp_maxes_c = lrp_max
+
+dists = np.empty(num_channels)
+for ii in range(num_channels):
+    idx_max = int(lrp_argmax[ii])
+    max_lat = interp_lats2[idx_max]
+    max_lon = interp_lons2[idx_max]
+    center = (center_lat,center_lon)
+    max_loc = (max_lat,max_lon)
+    dists[ii] = GD(center,max_loc).km
+lrp_dists_c = dists
+
+# SHAP with gaussian filter
+
+# compute background
+cg_1 = np.where(y_train[:,1] == 1)[0]
+vals1 = [np.random.choice(cg_1,replace=False) for k in range(100)]
+cg_0 = np.where(y_train[:,0] == 1)[0]
+vals0 = [np.random.choice(cg_0,replace=False) for k in range(100)]
+if len(cg_1) < 100:
+    vals1 = vals1[:len(cg_1)]
+    vals0 = vals0[:len(cg_1)]
+vals1.extend(vals0)
+vals1 = np.array(vals1)
+background_idxs = np.sort(vals1)
+
+background = X_train[background_idxs,:]
+test_images = X_test
+explainer = shap.DeepExplainer(model,background)
+shap_values = explainer.shap_values(test_images)
+shap1 = shap_values[1] # explaining lightning day predictions (class 1)
+
+idx1 = np.where(y_test[:,1]==1)[0]
+rel1 = shap1[idx1,:]
+rel_sums = np.sum(rel1,axis=0) # could use mean, but using sums to more easily interpret range
+
+# normalize
+relevance = rel_sums/np.max(rel_sums)
+relevances_s = relevance
+
+lrp_max = np.empty(num_channels)
+lrp_argmax = np.empty(num_channels)
+for x in range(num_channels):
+    var = relevance[:,:,x]
+    var2 = gaussian_filter(var, sigma=0.8)
+    var2[:2,:] = 0
+    var2[:,:2] = 0
+    lrp_max[x] = np.max(var2)
+    lrp_argmax[x] = np.argmax(var2)
+lrp_maxes_s = lrp_max
+
+dists = np.empty(num_channels)
+for ii in range(num_channels):
+    idx_max = int(lrp_argmax[ii])
+    max_lat = interp_lats2[idx_max]
+    max_lon = interp_lons2[idx_max]
+    center = (center_lat,center_lon)
+    max_loc = (max_lat,max_lon)
+    dists[ii] = GD(center,max_loc).km
+lrp_dists_s = dists
+
+np.save(f'cnn_metrics{cellnum}.npy',cnn_metrics)
+np.save(f'lrp_maxes{cellnum}_z.npy',lrp_maxes_z)
+np.save(f'lrp_dists{cellnum}_z.npy',lrp_dists_z)
+np.save(f'relevances{cellnum}_z.npy',relevances_z)
+np.save(f'lrp_maxes{cellnum}_c.npy',lrp_maxes_c)
+np.save(f'lrp_dists{cellnum}_c.npy',lrp_dists_c)
+np.save(f'relevances{cellnum}_c.npy',relevances_c)
+np.save(f'lrp_maxes{cellnum}_s.npy',lrp_maxes_s)
+np.save(f'lrp_dists{cellnum}_s.npy',lrp_dists_s)
+np.save(f'relevances{cellnum}_s.npy',relevances_s)
+np.save(f'pred_cg{cellnum}.npy',pred_cg)
+
+probability_yes = np.array(pred2.iloc[:,1])
+probability_no = np.array(pred2.iloc[:,0])
+np.save(f'probability_yes{cellnum}.npy',probability_yes)
+np.save(f'probability_no{cellnum}.npy',probability_no)
