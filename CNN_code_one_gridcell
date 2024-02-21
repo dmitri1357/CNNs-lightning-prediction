@@ -73,6 +73,7 @@ center_lat = land_cells[land_cells.cell_number == cellnum].lat.values[0]
 center_lon = land_cells[land_cells.cell_number == cellnum].lon.values[0]
 cg_days = nldn_vec[:,cell_loc]
 
+# load tuned hyperparameters
 learning_rate = np.load('learning_rates.npy')[cellnum-1]
 batch_size = int(np.load('batch_sizes.npy')[cellnum-1])
 conv_filters = int(np.load('conv_filters.npy')[cellnum-1])
