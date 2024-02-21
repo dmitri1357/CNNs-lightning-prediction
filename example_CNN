@@ -29,7 +29,6 @@ import geopy.distance as gd
 from geopy.distance import geodesic as GD
 import innvestigate
 import shap
-import shap # for some reason, shap needs to be imported a 2nd time on Kamiak in order to actually import
 from scipy.ndimage import gaussian_filter
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.model_selection import train_test_split
@@ -46,7 +45,7 @@ from tensorflow.keras import callbacks
 import warnings
 warnings.filterwarnings('ignore') # suppresses runtime warnings in output
 
-infile = open("land_cells.pkl",'rb') # formerly df1
+infile = open("land_cells.pkl",'rb') 
 land_cells = pickle.load(infile)
 infile.close()
 
@@ -68,7 +67,7 @@ lrp_maxes_e = np.empty(num_channels)
 lrp_dists_e = np.empty(num_channels)
 relevances_e = np.empty([20,20,num_channels])
 
-cell = np.load('cell{}.npy'.format(cellnum))
+cell = np.load('cell{}.npy'.format(cellnum)) # load the input array for this grid cell/CNN
 
 cell_loc = land_cells[land_cells.cell_number == cellnum].location.values[0]
 center_lat = land_cells[land_cells.cell_number == cellnum].lat.values[0]
