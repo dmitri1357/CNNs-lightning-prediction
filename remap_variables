@@ -1,1 +1,50 @@
 #!/usr/bin/env python3
+
+import geopy
+import geopy.distance as gd
+import scipy.interpolate as si
+
+lats = np.arange(31.5,48.51,1)
+lons = np.arange(-124.5,-103.49,1)
+radius_steps1 = [950,850,750,650,550,450,350,250,150,50,
+                50,150,250,350,450,550,650,750,850,950]
+bearings1 = [0,0,0,0,0,0,0,0,0,0,180,180,180,180,180,180,180,180,180,180]
+radius_steps2 = [950,850,750,650,550,450,350,250,150,50,
+                50,150,250,350,450,550,650,750,850,950]
+bearings2 = [270,270,270,270,270,270,270,270,270,270,
+            90,90,90,90,90,90,90,90,90,90]
+a_lats = np.arange(16.5,64.6,1)
+a_lons = np.arange(-144.5,-82.4,1)
+
+arr = var_warm.T # make it lon,lat,time
+remapped_var = np.empty([396,400,nday])
+remapped_var[:] = np.nan
+n = -1
+for i in tqdm(range(18)):
+    center_lat = lats[i]
+    for j in range(22):
+        n += 1
+        center_lon = lons[j]
+        if var[i,j] > 0:
+            # cell = nldn_masked[:,i,j]
+            # cg_yes = np.where(cell>0)[0]
+            # cg_no = np.where(cell==0)[0]
+            interp_lats = []
+            interp_lons = []
+            for k in range(20):
+                start = geopy.Point(center_lat,center_lon)
+                transect = gd.distance(kilometers = radius_steps1[k])
+                dest = transect.destination(point = start, bearing = bearings1[k])
+                interp_lats.append(dest[0])
+                interp_lons.append(dest[1])
+            interp_lats2 = []
+            interp_lons2 = []
+            for m in range(20):
+                start = geopy.Point(interp_lats[m],interp_lons[m])
+                for x in range(20):
+                    transect = gd.distance(kilometers = radius_steps2[x])
+                    dest = transect.destination(point = start, bearing = bearings2[x])
+                    interp_lats2.append(dest[0])
+                    interp_lons2.append(dest[1])                 
+            interp_vals = si.interpn((a_lons,a_lats),arr,(interp_lons2,interp_lats2))
+            remapped_var[n,:] = interp_vals
