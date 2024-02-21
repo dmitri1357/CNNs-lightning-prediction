@@ -1,1 +1,40 @@
 #!/usr/bin/env python3
+
+import numpy as np
+import pandas as pd
+
+remapped_z500 = np.load('remapped_z500.npy')
+remapped_column_rh = np.load('remapped_column_rh.npy')
+remapped_lapse700500 = np.load('remapped_lapse700500.npy')
+remapped_mucape = np.load('remapped_mucape.npy')
+remapped_omega500 = np.load('remapped_omega500.npy')
+remapped_rh500 = np.load('remapped_rh500.npy')
+remapped_mse = np.load('remapped_mse.npy')
+
+nday = 3416
+
+# this creates an array of shape (396,3416,20,20,7)
+remapped_vars = np.stack([remapped_z500,remapped_column_rh,remapped_lapse700500,
+                          remapped_mucape,remapped_omega500,remapped_rh500,remapped_mse],axis=-1)
+del remapped_z500,remapped_column_rh,remapped_lapse700500,remapped_mucape,remapped_omega500,remapped_rh500,remapped_mse
+
+nldn_bool = np.load('nldn_bool2.npy')
+ocean_mask = np.load('ocean_mask.npy')
+nldn_masked = np.empty([nday,18,22])
+for k in range(nday):
+    day = nldn_bool[k,:]
+    nldn_masked[k,:] = np.where(ocean_mask>0,day,np.nan) # >0 means "not np.nan" in mask layer
+
+var = np.sum(nldn_masked,axis=0)
+var1 = var/nday
+varvec = np.reshape(var,(396))
+df = pd.DataFrame(varvec)
+df1 = df[df.iloc[:,0] > 0]
+idx = df1.index.values
+df1.reset_index(inplace=True)
+
+remapped_vars2 = remapped_vars[idx,:] # subset to just the 346 grid cells for which CNNs will be trained
+del remapped_vars
+
+for k in range(346):
+    np.save('cell{}'.format(k+1),remapped_vars2[k,:])
