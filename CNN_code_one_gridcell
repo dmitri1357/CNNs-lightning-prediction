@@ -19,7 +19,7 @@ tf.compat.v1.disable_eager_execution() # eager execution needs to be disabled in
 
 # This file was run 285 times in parallel using a job array, one for each CNN and indexed from 0 to 284
 import sys
-cellnum = int(sys.argv[2]) # this line is passes an incremented integer (0 to 284) from the bash script executing the job array
+cellnum = int(sys.argv[2]) # this line is passed an incremented integer (0 to 284) from the bash script executing the job array
 
 import pandas as pd
 import pickle
