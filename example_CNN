@@ -2,11 +2,12 @@
 
 # this is the CNN code that was run at all 285 grid cells
 
+# set all random seeds
 import os
 os.environ['PYTHONHASHSEED']=str(0)
 import random
 random.seed(450)
-import numpy as np # re-import for random seed just in case
+import numpy as np 
 np.random.seed(550)
 import tensorflow as tf
 tf.keras.utils.set_random_seed(650)
@@ -14,14 +15,12 @@ tf.keras.utils.set_random_seed(650)
 session_conf = tf.compat.v1.ConfigProto(device_count={'CPU': 1})
 sess = tf.compat.v1.Session(config=session_conf)
 
-tf.compat.v1.disable_eager_execution()
+tf.compat.v1.disable_eager_execution() # eager execution needs to be disabled in order to compute LRP using the "iNNvestigate" package
 
-# This code was run 285 times in parallel using a job array, one for each CNN and indexed from 0 to 284
+# This file was run 285 times in parallel using a job array, one for each CNN and indexed from 0 to 284
 import sys
 cellnum = int(sys.argv[2]) # this line is passes an incremented integer (0 to 284) from the bash script executing the job array
 
-import numpy as np
-import tensorflow as tf
 import pandas as pd
 import pickle
 import geopy
