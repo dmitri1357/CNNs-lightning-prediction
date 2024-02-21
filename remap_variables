@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 
+# this code was used to remap the 7 predictor variables to 2000 x 2000 km equal area grids (100 km resolution) centered on each grid cell. 
+# the input variable "var_warm" is a 3D matrix of each predictor variable across the western US on warm-season days (June-September)
+# the ouput variable "remapped_var" is of shape 396 x 400 x 3416, consisting of:
+# 396 grid cells, 20 x 20 remapped variables (400 vectorized grid cells), and 3416 days (June-Sept, 1995-2022)
+
 import geopy
 import geopy.distance as gd
 import scipy.interpolate as si
@@ -15,6 +20,8 @@ bearings2 = [270,270,270,270,270,270,270,270,270,270,
             90,90,90,90,90,90,90,90,90,90]
 a_lats = np.arange(16.5,64.6,1)
 a_lons = np.arange(-144.5,-82.4,1)
+
+nday = 3416
 
 arr = var_warm.T # make it lon,lat,time
 remapped_var = np.empty([396,400,nday])
