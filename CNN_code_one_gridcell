@@ -156,7 +156,7 @@ def build_model(lr = learning_rate, conv_filters = conv_filters, dense_neurons =
     model.add(layers.Dense(2, activation='softmax'))
 
     model.compile(loss=losses.categorical_crossentropy,
-                  optimizer=optimizers.legacy.RMSprop(learning_rate = lr),
+                  optimizer=optimizers.legacy.Adam(learning_rate = lr),
                   metrics=METRICS)
     return(model)
 
