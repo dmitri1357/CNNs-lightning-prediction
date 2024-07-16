@@ -124,7 +124,7 @@ METRICS = [
 ]
 
 def build_model(lr = learning_rate, conv_filters = conv_filters, dense_neurons = dense_neurons,
-                             dense_layers = 1,
+                             dense_layers = dense_layers,
                 activity_reg = activity_reg, dropout_rate = dropout_rate, input_channels = num_channels):
 
     model = models.Sequential()
