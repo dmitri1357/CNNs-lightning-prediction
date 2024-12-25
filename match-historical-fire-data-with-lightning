@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+import matplotlib.pyplot as plt   
+from mpl_toolkits.basemap import Basemap
+
+import matplotlib as mpl
+mpl.rc('font',family='Arial')
+
+nldn_bool2 = np.load('nldn_bool2.npy')
+nldn_bool2 = nldn_bool2[:-244,:,:] # drop 2021-2022
+
+fire_bool = np.load('fire_bool.npy') # this dataset was created in the 'collect-FPA-FOD-fire-data-onto-grid' file
+
+fvec = np.reshape(fire_bool,(3172,396))
+lvec = np.reshape(nldn_bool2,(3172,396))
+
+# match fire data with lightning that occurred up to 5 days preceding the wildfire discovery date
+
+matched_cg = np.empty([3172,396])
+for k in tqdm(range(396)):
+    firecell = fvec[:,k]
+    cgcell = lvec[:,k]
+    fire_idx = np.where(firecell == 1)[0]
+    df = pd.DataFrame({'fire':firecell,'cg':cgcell})
+    df_fire = df.loc[fire_idx]
+    keep_idx = []
+    match_idx = df_fire[df_fire.cg == 1].index.values
+    keep_idx.extend(list(match_idx))
+    nonmatch_idx = df_fire[df_fire.cg == 0].index.values
+    match_minus1 = nonmatch_idx[np.where(cgcell[nonmatch_idx - 1] == 1)[0]]
+    keep_idx.extend(list(match_minus1))
+    still_non1 = nonmatch_idx[np.where(cgcell[nonmatch_idx - 1] == 0)[0]]
+    match_minus2 = still_non1[np.where(cgcell[still_non1 - 2] == 1)[0]]
+    keep_idx.extend(list(match_minus2))
+    still_non2 = still_non1[np.where(cgcell[still_non1 - 2] == 0)[0]]
+    match_minus3 = still_non2[np.where(cgcell[still_non2 - 3] == 1)[0]]
+    keep_idx.extend(list(match_minus3))
+    still_non3 = still_non2[np.where(cgcell[still_non2 - 3] == 0)[0]]
+    match_minus4 = still_non3[np.where(cgcell[still_non3 - 4] == 1)[0]]
+    keep_idx.extend(list(match_minus4))
+    still_non4 = still_non3[np.where(cgcell[still_non3 - 4] == 0)[0]]
+    match_minus5 = still_non4[np.where(cgcell[still_non4 - 5] == 1)[0]]
+    keep_idx.extend(list(match_minus5))
+    still_non5 = still_non4[np.where(cgcell[still_non4 - 5] == 0)[0]]
+    cg_idx = np.zeros(3172)
+    if len(keep_idx) > 0:
+        cg_idx[np.array(keep_idx)] = 1
+        matched_cg[:,k] = cg_idx
+    else:
+        matched_cg[:,k] = cg_idx
+
+np.save('matched_cg',matched_cg)
+matched_cg = np.load('matched_cg.npy')
+
+var = np.nansum(matched_cg,axis=0)
+var = np.reshape(var,396)
+
+retained_cnns = np.load('ecoprov_idx.npy') # this is just a subset file used to mask out grid cells that I'm not interested in
+
+var = np.where(retained_cnns>0,var,np.nan)
+
+var = np.reshape(var,(18,22))
+lat = np.arange(31.5,48.51,1)
+lon = np.arange(-124.5,-103.49,1)
+lon, lat = np.meshgrid(lon, lat)
+
+plt.figure(figsize=(10, 8))
+m = Basemap(projection='lcc', area_thresh=10000, resolution='l',
+            width=2.1E6, height=2.1E6,
+            lat_0=40.7, lon_0=-113.8)
+m.fillcontinents(color='0.7',lake_color='white',alpha=1,zorder=0)
+m.drawstates(linewidth=0.5,linestyle='solid',color='k')
+m.drawcountries(linewidth=0.5,linestyle='solid',color='k')
+m.drawcoastlines(color='black')
+m.pcolormesh(lon, lat, var, latlon=True, cmap=plt.cm.get_cmap('Reds'))
+cb = plt.colorbar()
+cb.ax.tick_params(labelsize=21)
+plt.clim(0,400)
+plt.title('Number of days with matched lightning \n during JJAS 1995-2020', size=28)
+m.readshapefile('western_ecoprovinces',name='null',color='k',linewidth=2)   
+
+var = var/26
+
+# 15,10 = idx of NW grid cell
+# 3,16 = idx of SW grid cell
+
+plt.figure(figsize=(10, 8))
+m = Basemap(projection='lcc', area_thresh=10000, resolution='l',
+            width=2.1E6, height=2.1E6,
+            lat_0=40.7, lon_0=-113.8)
+m.fillcontinents(color='0.7',lake_color='white',alpha=1,zorder=0)
+m.drawstates(linewidth=0.5,linestyle='solid',color='k')
+m.drawcountries(linewidth=0.5,linestyle='solid',color='k')
+m.drawcoastlines(color='black')
+m.pcolormesh(lon, lat, var, latlon=True, cmap=plt.cm.get_cmap('Reds',14))
+cb = plt.colorbar()
+cb.ax.tick_params(labelsize=21)
+plt.clim(0,14)
+plt.title('Average number of LIW ignition days \n during JJAS 1995-2020', size=24)
+m.scatter(-114.5, 46.5, latlon=True, marker="*", s=200, c="#FFFF00", alpha=1) 
+m.scatter(-108.5, 34.5, latlon=True, marker="*", s=200, c="#FFFF00", alpha=1) 
+m.readshapefile('western_ecoprovinces',name='null',color='k',linewidth=2)   
