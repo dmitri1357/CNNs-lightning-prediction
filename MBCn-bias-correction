@@ -14,7 +14,7 @@ dref = xr.open_dataset("merra2_predictors.nc")
 dsim31 = xr.open_dataset("cesm2_predictors31.nc") # this is the member used for estimating quantiles (#31)
 dhist31 = dsim31.sel(time=slice("1995", "2022"))
 
-for k in range(50):
+for k in range(50): # loop over the 50 CESM2 ensemble members
     quantiles = 100
 
     dsim = xr.open_dataset(f"cesm2_predictors{k}.nc")
