@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+
+import geopandas as gpd
+import numpy as np
+import pandas as pd
+import rasterio
+from tqdm import tqdm
+import matplotlib.pyplot as plt   
+from mpl_toolkits.basemap import Basemap
+
+import matplotlib as mpl
+mpl.rc('font',family='Arial')
+
+# This is the geodatabase of all US wildfires from 1992-2020 downloaded from the FPA-FOD
+# this takes a long time to open (>10 minutes)
+gdf = gpd.read_file('a0000000c.gdbtable')
+
+gdf.columns
+gdf.head(5)
+gdf.FIRE_YEAR.head(5)
+gdf_west = gdf[gdf.LONGITUDE<-100] # subset to WUS
+del gdf
+gdf_west = gdf_west[gdf_west.LONGITUDE>-130] # drop Alaska/Hawaii
+gdf_west = gdf_west[gdf_west.LATITUDE < 50] 
+gdf_west = gdf_west[gdf_west.LATITUDE > 30] 
+gdf_west = gdf_west[gdf_west.FIRE_YEAR>=1995] 
+
+gdf_west.NWCG_GENERAL_CAUSE.unique()
+gdf_west = gdf_west[gdf_west.NWCG_CAUSE_CLASSIFICATION == 'Natural']
+gdf_west.NWCG_GENERAL_CAUSE.unique()
+gdf_west.columns
+
+gdf_west['FIRE_SIZE_HA'] = gdf_west.FIRE_SIZE * 0.405
+gdf_west = gdf_west[gdf_west.FIRE_SIZE_HA >= 1]
+
+import pickle
+f = open("fpa_fod.pkl","wb")
+pickle.dump(gdf_west,f)
+f.close()
+
+#
+
+infile = open("fpa_fod.pkl",'rb')
+fpa_fod = pickle.load(infile)
+infile.close()
+
+year1 = list(np.arange(1,366,1))
+year2 = list(np.arange(1,367,1))
+idxs = [year1,year2,year1,year1,year1,year2,year1,year1,year1,year2,
+               year1,year1,year1,year2,year1,year1,year1,year2,
+               year1,year1,year1,year2,year1,year1,year1,year2]
+idxs_concat = []
+for k in range(26):
+    idxs_concat.extend(idxs[k])
+
+dates = pd.date_range(start='1/1/1995', end='12/31/2020')
+dates = pd.DataFrame(dates)
+dates['year'] = pd.to_datetime(dates.iloc[:,0]).dt.year
+all_years = np.array(dates.year)
+all_idx = dates.index.values
+
+idx_df = pd.DataFrame({'year':all_years, 'day':idxs_concat})
+idx_df.head
+idx_df = idx_df.astype('str')
+idx_df['combined'] = idx_df['year'] + idx_df['day']
+
+dates = pd.date_range(start='1/1/1995', end='12/31/2020')
+dates = pd.DataFrame(dates)
+dates['month'] = pd.to_datetime(dates.iloc[:,0]).dt.month
+dates = dates[dates.month.isin([6,7,8,9])]
+idx = dates.index.values
+
+idx_df_warm = idx_df.loc[idx]
+idx_df_warm.head
+idx_df_warm.reset_index(inplace=True) # create new index for JJAS only
+idx_df_warm.reset_index(inplace=True) # this forces the JJAS index into a new DF column called level_0
+idx_df_warm.drop(columns='index',inplace=True)
+idx_df_warm.rename(columns={'level_0':'warm_index'},inplace=True)
+
+fpa_fod.columns
+fpa_fod['FIRE_YEAR'] = fpa_fod['FIRE_YEAR'].astype('str')
+fpa_fod['DISCOVERY_DOY'] = fpa_fod['DISCOVERY_DOY'].astype('str')
+fpa_fod['combined'] = fpa_fod['FIRE_YEAR'] + fpa_fod['DISCOVERY_DOY']
+fpa_fod.head
+
+merged_df = fpa_fod.merge(idx_df_warm, on='combined', how='left')
+merged_df = gpd.GeoDataFrame(merged_df)
+merged_df['month'] = pd.to_datetime(merged_df.DISCOVERY_DATE).dt.month
+merged_df = merged_df[merged_df.month.isin([6,7,8,9])]
+merged_df = merged_df[merged_df.LONGITUDE <= -102]
+
+# collect FPA-FOD fire data onto 1°x1° grid using 'rasterio' and 'geopandas' Python packages
+
+raster = rasterio.open('grid_1degree.tif')
+lat1 = np.flipud(np.arange(30,50.01,1)) # to match index of raster which is oriented top-to-bottom
+lon1 = np.arange(-125,-101.99,1)
+df_lat = pd.DataFrame(lat1)
+df_lon = pd.DataFrame(lon1)
+lon1, lat1 = np.meshgrid(lon1, lat1)
+lat_vec1 = np.reshape(lat1,504)
+lon_vec1 = np.reshape(lon1,504)
+df3 = pd.DataFrame({'lat':lat_vec1,'lon':lon_vec1})
+nldn_bool2 = np.empty([3172,18,22])
+for k in tqdm(range(3172)):
+    sub_df = merged_df[merged_df.warm_index == k]
+    df = pd.DataFrame({'lat':sub_df.LATITUDE,'lon':sub_df.LONGITUDE})
+    gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.lon, df.lat))
+    lat_idx, lon_idx = raster.index(gdf.geometry.x,gdf.geometry.y)
+    df1 = pd.DataFrame({'lat':lat_idx,'lon':lon_idx})
+    df2 = df1.drop_duplicates()
+    hit_lats = np.array(df2.lat)
+    hit_lons = np.array(df2.lon)
+    final_lats = []
+    final_lons = []
+    for j in range(len(hit_lats)): # or hit_lons
+        lt = hit_lats[j]
+        ln = hit_lons[j]
+        final_lats.append(df_lat.iloc[lt,0])
+        final_lons.append(df_lon.iloc[ln,0])
+    df4 = pd.DataFrame({'lat':final_lats,'lon':final_lons})
+    df5 = pd.merge(df3, df4, on=['lat','lon'], how="outer", indicator=True)
+    merge_idx = df5[df5._merge == 'both']
+    cg_idx = np.zeros(504)
+    cg_idx[merge_idx.index.values] = 1
+    var2 = np.reshape(cg_idx,(21,24)) # don't flip back, unlike in the CG case
+    nldn_bool2[k,:] = var2[1:-2,:-2] # subset from (21,24) to (18,22)
+
+np.save('fire_bool',nldn_bool2.astype('int32'))
+fire_bool = np.load('fire_bool.npy')
+
+fire_counts = np.nansum(fire_bool,axis=0)
+fire_vec = np.reshape(fire_counts,396)
+vec = np.reshape(var2,396) # var2 is from "cnn_all_396" file
+fire_vec = np.where(vec>0,fire_vec,np.nan)
+
+np.save('fire_vec',fire_vec)
+fire_vec = np.load('fire_vec.npy')
+
+var = np.reshape(fire_vec,(18,22))
+lat = np.arange(31.5,48.51,1)
+lon = np.arange(-124.5,-103.49,1)
+lon, lat = np.meshgrid(lon, lat)
+
+# map the results
+
+plt.figure(figsize=(10, 8))
+m = Basemap(projection='lcc', area_thresh=10000, resolution='l',
+            width=2.1E6, height=2.1E6,
+            lat_0=40.7, lon_0=-113.8)
+m.fillcontinents(color='gray',lake_color='white',alpha=1,zorder=0)
+m.drawstates(linewidth=0.5,linestyle='solid',color='k')
+m.drawcountries(linewidth=0.5,linestyle='solid',color='k')
+m.drawcoastlines(color='black')
+m.pcolormesh(lon, lat, var, latlon=True, cmap=plt.cm.get_cmap('Reds'))
+plt.colorbar()
+plt.clim(0,400)
+plt.title('Number of days with fire discovery \n during JJAS 1995-2020', size=28)   
