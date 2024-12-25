@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+
+from xclim import sdba
+import numpy as np
+import pandas as pd
+import xarray as xr
+from xclim import set_options
+
+'''
+Using MBCn code from the Xclim tutorial: https://xclim.readthedocs.io/en/stable/notebooks/sdba.html#Fifth-example-:-Multivariate-bias-adjustment-with-multiple-steps-(Cannon,-2018)
+'''
+
+dref = xr.open_dataset("merra2_predictors.nc")
+dsim31 = xr.open_dataset("cesm2_predictors31.nc") # this is the member used for estimating quantiles (#31)
+dhist31 = dsim31.sel(time=slice("1995", "2022"))
+
+for k in range(50):
+    quantiles = 100
+
+    dsim = xr.open_dataset(f"cesm2_predictors{k}.nc")
+    dhist = dsim.sel(time=slice("1995", "2022"))
+    dsim = dsim.sel(time=slice("2023", "2100"))
+
+    # Perform an initial univariate adjustment
+
+    QDM_mse = sdba.QuantileDeltaMapping.train( # train on member 31
+        dref.mse, dhist31.mse, nquantiles=quantiles, kind="+", group="time")
+
+    # Adjust both hist and sim, we'll feed both to the Npdf transform.
+    scenh_mse = QDM_mse.adjust(dhist.mse) # adjust the actual member k
+    scens_mse = QDM_mse.adjust(dsim.mse)
+
+    QDM_lapse = sdba.QuantileDeltaMapping.train(
+        dref.lapse, dhist31.lapse, nquantiles=quantiles, kind="+", group="time")
+
+    # Adjust both hist and sim, we'll feed both to the Npdf transform.
+    scenh_lapse = QDM_lapse.adjust(dhist.lapse)
+    scens_lapse = QDM_lapse.adjust(dsim.lapse)
+
+    QDM_rh = sdba.QuantileDeltaMapping.train(
+        dref.rh, dhist31.rh, nquantiles=quantiles, kind="+", group="time")
+
+    # Adjust both hist and sim, we'll feed both to the Npdf transform.
+    scenh_rh = QDM_rh.adjust(dhist.rh)
+    scens_rh = QDM_rh.adjust(dsim.rh)
+
+    scenh = xr.Dataset(dict(mse=scenh_mse, lapse=scenh_lapse, rh=scenh_rh))
+    scens = xr.Dataset(dict(mse=scens_mse, lapse=scens_lapse, rh=scens_rh))
+
+    # Stack the variables to multivariate arrays and standardize them
+
+    # Stack the variables (mse, lapse, and rh)
+    ref = sdba.processing.stack_variables(dref)
+    scenh = sdba.processing.stack_variables(scenh)
+    scens = sdba.processing.stack_variables(scens)
+
+    # Standardize
+    ref, _, _ = sdba.processing.standardize(ref)
+
+    allsim_std, _, _ = sdba.processing.standardize(xr.concat((scenh, scens), "time"))
+    scenh_std = allsim_std.sel(time=scenh.time)
+    scens_std = allsim_std.sel(time=scens.time)
+
+    # Perform the N-dimensional probability density function transform
+
+    # See the advanced notebook in the Xclim tutorial for details on how this option works
+    with set_options(sdba_extra_output=True):
+        out = sdba.adjustment.NpdfTransform.adjust(
+            ref,
+            scenh_std,
+            scens_std,
+            base=sdba.QuantileDeltaMapping,  # Use QDM as the univariate adjustment.
+            base_kws={"nquantiles": quantiles, "group": "time"},
+            n_iter=20,  # perform 20 iterations
+            n_escore=1000,  # only send 1000 points to the escore metric (it is really slow)
+        )
+
+    scenh_npdft = out.scenh.rename(time_hist="time")  # Bias-adjusted historical period
+    scens_npdft = out.scen  # Bias-adjusted future period
+    extra = out.drop_vars(["scenh", "scen"])
+
+    # Restoring the trend
+
+    scenh = sdba.processing.reordering(scenh_npdft, scenh, group="time")
+    scens = sdba.processing.reordering(scens_npdft, scens, group="time")
+
+    scenh = sdba.processing.unstack_variables(scenh)
+    scens = sdba.processing.unstack_variables(scens)
+
+    scenh.to_netcdf(f'mbc_adjusted_hist{k}.nc')
+    scens.to_netcdf(f'mbc_adjusted_proj{k}.nc')
