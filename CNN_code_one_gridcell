@@ -51,7 +51,7 @@ infile.close()
 nldn_bool = np.load('nldn_bool2.npy') # need this for "cg_days"
 nldn_vec = np.reshape(nldn_bool,(3416,396))
 
-num_channels = 7 # change this to reflect number of predictor variables
+num_channels = 7 # change this to reflect number of predictor variables. E.g., the CNNs used for CESM2 projections had 3 predictor variables instead of 7
 
 # spots are val_recalls,val_precisions,test_recalls,test_precisions,epochs,total number of predicted CG days,
 # val_AUC,pred_AUC,class_weights0,class_weights1
