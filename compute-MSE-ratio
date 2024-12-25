@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+
+import numpy as np
+import sys
+
+idx = int(sys.argv[2])
+
+# compute MSE at surface
+
+qv2m_all = np.load(f'qrefht_regridded{idx}.npy')
+t2m_all = np.load(f'trefht_regridded{idx}.npy')
+t500_all = np.load(f't500_regridded{idx}.npy')
+surf_geo = np.load(f'phis_regridded{idx}.npy')
+
+qvec = np.reshape(qv2m_all,(38690,3087))
+tvec = np.reshape(t2m_all,(38690,3087))
+gvec = np.reshape(surf_geo,(38690,3087))
+
+tvec = tvec + 273.15 # convert to K for mse calculation
+
+mse_surf = np.empty([38690,3087])
+for k in range(38690):
+    day_q = qvec[k,:]
+    day_t = tvec[k,:]
+    day_g = gvec[k,:]
+    for j in range(3087):
+        cell_q = day_q[j]
+        cell_t = day_t[j]
+        cell_z = day_g[j]
+        mse_surf[k,j] = (1005*cell_t)+(2260000*cell_q)+(cell_z)
+        # not multiplying cell_z by 9.80665 because it's already the surface geopotential
+        # (not the geopotential height)
+
+# compute free-troposphere saturation MSE (500 hPa)
+
+t500_vec = np.reshape(t500_all,(38690,3087))
+
+z500_all = np.load(f'z500_regridded{idx}.npy')
+z500_all = z500_all * 9.80665 # convert back to geopotential
+zvec = np.reshape(z500_all,(38690,3087))
+
+# Ruping Mo's function
+
+def saturation_sh(T, p):
+#----------------------------------------------------------------------------
+# Compute saturation specific humidity (qs) as a function of temperature
+# (T, unit: C) and pressure (p, unit: hPa) based on formula given in
+# Alduchov and Eskridge (1996). Saturation vapor pressure (es) is calculated
+# as a linear weighting average between the moist-air saturation vapor 
+# pressure over a plane surface of water and the moist-air saturation vapor 
+# pressure over a plane surface of ice, assuming supercooled liquid water
+# can exist in the atmosphere with temperatures in the range Tm < T < T0.
+#
+# If T is replaced by the dewpoint Td, this function will return the specific 
+# humidity (q)
+#----------------------------------------------------------------------------
+    T0  = 0.0                          # degC
+    Tm = -40.0                         # degC
+    a = (T - Tm) / (T0 - Tm)
+    a = np.where(T > 0, 1.0, a)
+    a = np.where(T < Tm, 0.0, a)
+    b = 1 - a
+    es = a * (6.11374*np.exp((0.0000045*p)+17.625*T/(T+243.04))) + \
+         b * (6.10489*np.exp(0.000008*p+22.587*T/(T+273.86)))
+    qs = 0.622 * es / (p - 0.378 * es)
+    return qs
+
+p = 500 * 100
+t = t500_vec.copy() # needs to be deg C for function, in this case it already is
+
+qs500_vec = saturation_sh(t,p)
+
+t500_vec = t500_vec + 273.15 # converting back to K for MSE ratio calculation
+
+mse_sat_500 = np.empty([38690,3087])
+for k in range(38690):
+    day_q = qs500_vec[k,:]
+    day_t = t500_vec[k,:]
+    day_z = zvec[k,:]
+    for j in range(3087):
+        cell_q = day_q[j]
+        cell_t = day_t[j]
+        cell_z = day_z[j]
+        mse_sat_500[k,j] = (1005*cell_t)+(2260000*cell_q)+(cell_z)
+        # as with the MSE calculation, not multiplying cell_z by gravity because
+        # I have already converted it to geopotential
+
+mse_ratios = mse_surf/mse_sat_500
+
+np.save(f'mse_ratio_regridded{idx}',mse_ratios.astype('float32'))
+                                                                         
